@@ -137,13 +137,19 @@ def get_token(module_params):
         client_secret = module_params.get('auth_client_secret')
         connection_timeout = module_params.get('connection_timeout')
         auth_url = URL_TOKEN.format(url=base_url, realm=auth_realm)
-        temp_payload = {
-            'grant_type': 'password',
-            'client_id': client_id,
-            'client_secret': client_secret,
-            'username': auth_username,
-            'password': auth_password,
-        }
+        if client_secret is not None:
+            temp_payload = {
+                'grant_type': 'client_credentials',
+                'client_id': client_id,
+                'client_secret': client_secret
+            }
+        else:
+            temp_payload = {
+                'grant_type': 'password',
+                'client_id': client_id,
+                'username': auth_username,
+                'password': auth_password
+            }
         # Remove empty items, for instance missing client_secret
         payload = dict(
             (k, v) for k, v in temp_payload.items() if v is not None)
@@ -233,6 +239,7 @@ class KeycloakAPI(object):
         self.validate_certs = self.module.params.get('validate_certs')
         self.connection_timeout = self.module.params.get('connection_timeout')
         self.restheaders = connection_header
+        self.debug = []
 
     def get_realm_info_by_id(self, realm='master'):
         """ Obtain realm public info by id
@@ -1299,7 +1306,7 @@ class KeycloakAPI(object):
             self.module.fail_json(msg='Could not copy authentication flow %s in realm %s: %s'
                                   % (config["alias"], realm, str(e)))
 
-    def create_empty_auth_flow(self, config, realm='master'):
+    def create_auth_flow(self, config, realm='master'):
         """
         Create a new empty authentication flow.
         :param config: Representation of the authentication flow to create.
@@ -1339,6 +1346,7 @@ class KeycloakAPI(object):
             self.module.fail_json(msg='Could not create empty authentication flow %s in realm %s: %s'
                                   % (config["alias"], realm, str(e)))
 
+
     def update_authentication_executions(self, flowAlias, updatedExec, realm='master'):
         """ Update authentication executions
 
@@ -1347,7 +1355,7 @@ class KeycloakAPI(object):
         :return: HTTPResponse object on success
         """
         try:
-            open_url(
+            r = open_url(
                 URL_AUTHENTICATION_FLOW_EXECUTIONS.format(
                     url=self.baseurl,
                     realm=realm,
@@ -1357,6 +1365,7 @@ class KeycloakAPI(object):
                 data=json.dumps(updatedExec),
                 timeout=self.connection_timeout,
                 validate_certs=self.validate_certs)
+            self.debug.append({"url": r.url, "data": updatedExec, "status":r.status, "reason": r.reason, "body": r.read()})
         except Exception as e:
             self.module.fail_json(msg="Unable to update executions %s: %s" % (updatedExec, str(e)))
 
@@ -1368,7 +1377,7 @@ class KeycloakAPI(object):
         :return: HTTPResponse object on success
         """
         try:
-            open_url(
+            r = open_url(
                 URL_AUTHENTICATION_EXECUTION_CONFIG.format(
                     url=self.baseurl,
                     realm=realm,
@@ -1378,33 +1387,51 @@ class KeycloakAPI(object):
                 data=json.dumps(authenticationConfig),
                 timeout=self.connection_timeout,
                 validate_certs=self.validate_certs)
+            self.debug.append({"url": r.url, "data": authenticationConfig, "status":r.status, "reason": r.reason, "body": r.read()})
         except Exception as e:
             self.module.fail_json(msg="Unable to add authenticationConfig %s: %s" % (executionId, str(e)))
 
-    def create_subflow(self, subflowName, flowAlias, realm='master'):
+    def create_subflow(self, subflowName, flowAlias, topLevelFlow, realm='master'):
         """ Create new sublow on the flow
 
         :param subflowName: name of the subflow to create
         :param flowAlias: name of the parent flow
         :return: HTTPResponse object on success
         """
+        newSubFlow = {}
+        newSubFlow["alias"] = subflowName
+        newSubFlow["provider"] = "registration-page-form"
+        newSubFlow["type"] = "basic-flow"
         try:
-            newSubFlow = {}
-            newSubFlow["alias"] = subflowName
-            newSubFlow["provider"] = "registration-page-form"
-            newSubFlow["type"] = "basic-flow"
-            open_url(
-                URL_AUTHENTICATION_FLOW_EXECUTIONS_FLOW.format(
-                    url=self.baseurl,
-                    realm=realm,
-                    flowalias=quote(flowAlias)),
-                method='POST',
-                headers=self.restheaders,
-                data=json.dumps(newSubFlow),
-                timeout=self.connection_timeout,
-                validate_certs=self.validate_certs)
+            try:
+                r = open_url(
+                    URL_AUTHENTICATION_FLOW_EXECUTIONS_FLOW.format(
+                        url=self.baseurl,
+                        realm=realm,
+                        flowalias=quote(flowAlias)),
+                    method='POST',
+                    headers=self.restheaders,
+                    data=json.dumps(newSubFlow),
+                    timeout=self.connection_timeout,
+                    validate_certs=self.validate_certs)
+                self.debug.append({"url": r.url, "data": newSubFlow, "status":r.status, "reason": r.reason, "body": r.read()})
+            except HTTPError as e:
+                if e.code == 409:
+                    newSubFlow["alias"] = "%s %s" % (topLevelFlow, subflowName)
+                    r = open_url(
+                        URL_AUTHENTICATION_FLOW_EXECUTIONS_FLOW.format(
+                            url=self.baseurl,
+                            realm=realm,
+                            flowalias=quote(flowAlias)),
+                        method='POST',
+                        headers=self.restheaders,
+                        data=json.dumps(newSubFlow),
+                        timeout=self.connection_timeout,
+                        validate_certs=self.validate_certs)
+                    self.debug.append({"url": r.url, "data": newSubFlow, "status":r.status, "reason": r.reason, "body": r.read()})
+            return newSubFlow["alias"]
         except Exception as e:
-            self.module.fail_json(msg="Unable to create new subflow %s: %s" % (subflowName, str(e)))
+            self.module.fail_json(msg="Unable to create new subflow %s in flow %s: %s" % (newSubFlow["alias"], flowAlias, str(e)))
 
     def create_execution(self, execution, flowAlias, realm='master'):
         """ Create new execution on the flow
@@ -1417,7 +1444,7 @@ class KeycloakAPI(object):
             newExec = {}
             newExec["provider"] = execution["providerId"]
             newExec["requirement"] = execution["requirement"]
-            open_url(
+            r = open_url(
                 URL_AUTHENTICATION_FLOW_EXECUTIONS_EXECUTION.format(
                     url=self.baseurl,
                     realm=realm,
@@ -1427,6 +1454,7 @@ class KeycloakAPI(object):
                 data=json.dumps(newExec),
                 timeout=self.connection_timeout,
                 validate_certs=self.validate_certs)
+            self.debug.append({"url": r.url, "data": newExec, "status":r.status, "reason": r.reason, "body": r.read()})
         except Exception as e:
             self.module.fail_json(msg="Unable to create new execution %s: %s" % (execution["provider"], str(e)))
 
@@ -1501,6 +1529,21 @@ class KeycloakAPI(object):
         except Exception as e:
             self.module.fail_json(msg='Could not get executions for authentication flow %s in realm %s: %s'
                                   % (config["alias"], realm, str(e)))
+
+    def is_auth_executions_structure_equal(self, authexecs1, authexecs2, exclude=None):
+        temp1 = []
+        temp2 = []
+        for authexec in authexecs1:
+            temp = {x: authexec[x] for x in authexec if x not in exclude}
+            temp1.append(temp)
+        for authexec in authexecs2:
+            temp = {x: authexec[x] for x in authexec if x not in exclude}
+            temp2.append(temp)
+
+        self.debug.append(temp1)
+        self.debug.append(temp2)
+        return temp1 == temp2
+    
 
     def get_identity_providers(self, realm='master'):
         """ Fetch representations for identity providers in a realm

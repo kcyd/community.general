@@ -240,7 +240,7 @@ end_state:
 from ansible_collections.community.general.plugins.module_utils.identity.keycloak.keycloak \
     import KeycloakAPI, camel, keycloak_argument_spec, get_token, KeycloakError, is_struct_included
 from ansible.module_utils.basic import AnsibleModule
-
+import json
 
 def find_exec_in_executions(searched_exec, executions):
     """
@@ -273,20 +273,46 @@ def create_or_update_executions(kc, config, realm='master'):
         changed = False
         after = ""
         before = ""
-        if "authenticationExecutions" in config:
+        cleared = False
+        if config["complete"] is True:
+            existing_executions = kc.get_executions_representation(config, realm=realm)
+            exclude_key = {"id", "flowId", "displayName", "description", "authenticationConfig", "requirement"}
+            if not kc.is_auth_executions_structure_equal(config["authenticationExecutions"], existing_executions, exclude_key):
+                flow = kc.get_authentication_flow_by_alias(alias=config["alias"], realm=realm)
+                kc.delete_authentication_flow_by_id(id=flow["id"], realm=realm)
+                kc.create_auth_flow(config=config, realm=realm)
+                cleared = True
+                before = existing_executions
+
+        parents = {}
+        if config["authenticationExecutions"] is not None:
             # Get existing executions on the Keycloak server for this alias
             existing_executions = kc.get_executions_representation(config, realm=realm)
             for new_exec_index, new_exec in enumerate(config["authenticationExecutions"], start=0):
-                if new_exec["index"] is not None:
+                if new_exec["index"] is not None and "level" not in new_exec:
                     new_exec_index = new_exec["index"]
                 exec_found = False
                 # Get flowalias parent if given
-                if new_exec["flowAlias"] is not None:
+                if "flowAlias" in new_exec and new_exec["flowAlias"] is not None:
                     flow_alias_parent = new_exec["flowAlias"]
                 else:
+                    parents[0]= config["alias"]
                     flow_alias_parent = config["alias"]
+
+                if "level" in new_exec:
+                    flow_alias_parent = parents[new_exec["level"]]
+
                 # Check if same providerId or displayName name between existing and new execution
-                exec_index = find_exec_in_executions(new_exec, existing_executions)
+                if config["complete"] is False or cleared is True:
+                    exec_index = find_exec_in_executions(new_exec, existing_executions)
+                else:
+                    exec_index = new_exec_index
+                    exec_found = True
+                    before += str(existing_executions[exec_index]) + '\n'
+                    id_to_update = existing_executions[exec_index]["id"]
+                    if "level" in new_exec:
+                        parents[new_exec["level"]+1] = existing_executions[exec_index]["displayName"]
+ 
                 if exec_index != -1:
                     # Remove key that doesn't need to be compared with existing_exec
                     exclude_key = ["flowAlias"]
@@ -300,18 +326,21 @@ def create_or_update_executions(kc, config, realm='master'):
                     id_to_update = existing_executions[exec_index]["id"]
                     # Remove exec from list in case 2 exec with same name
                     existing_executions[exec_index].clear()
-                elif new_exec["providerId"] is not None:
+                elif "providerId" in new_exec and new_exec["providerId"] is not None:
                     kc.create_execution(new_exec, flowAlias=flow_alias_parent, realm=realm)
                     exec_found = True
                     exec_index = new_exec_index
                     id_to_update = kc.get_executions_representation(config, realm=realm)[exec_index]["id"]
                     after += str(new_exec) + '\n'
                 elif new_exec["displayName"] is not None:
-                    kc.create_subflow(new_exec["displayName"], flow_alias_parent, realm=realm)
+                    subflow_name = kc.create_subflow(new_exec["displayName"], flow_alias_parent, parents[0], realm=realm)
+                    new_exec["displayName"] = subflow_name
                     exec_found = True
                     exec_index = new_exec_index
                     id_to_update = kc.get_executions_representation(config, realm=realm)[exec_index]["id"]
                     after += str(new_exec) + '\n'
+                    if "level" in new_exec:
+                        parents[new_exec["level"]+1] = subflow_name
                 if exec_found:
                     changed = True
                     if exec_index != -1:
@@ -320,11 +349,13 @@ def create_or_update_executions(kc, config, realm='master'):
                             "id": id_to_update
                         }
                         # add the execution configuration
-                        if new_exec["authenticationConfig"] is not None:
+                        if "authenticationConfig" in new_exec and new_exec["authenticationConfig"] is not None:
+                            if "id" in new_exec["authenticationConfig"]:
+                                del new_exec["authenticationConfig"]["id"]
                             kc.add_authenticationConfig_to_execution(updated_exec["id"], new_exec["authenticationConfig"], realm=realm)
                         for key in new_exec:
-                            # remove unwanted key for the next API call
-                            if key != "flowAlias" and key != "authenticationConfig":
+                            # only add supported keys for update
+                            if key == "requirement" or key == "description" or key == "displayName":
                                 updated_exec[key] = new_exec[key]
                         if new_exec["requirement"] is not None:
                             kc.update_authentication_executions(flow_alias_parent, updated_exec, realm=realm)
@@ -360,6 +391,7 @@ def main():
                                           authenticationConfig=dict(type='dict'),
                                           index=dict(type='int'),
                                       )),
+        flowJson=dict(type='str'),
         state=dict(choices=["absent", "present"], default='present'),
         force=dict(type='bool', default=False),
     )
@@ -368,11 +400,12 @@ def main():
 
     module = AnsibleModule(argument_spec=argument_spec,
                            supports_check_mode=True,
-                           required_one_of=([['token', 'auth_realm', 'auth_username', 'auth_password']]),
-                           required_together=([['auth_realm', 'auth_username', 'auth_password']])
+                           mutually_exclusive=([['token', 'auth_realm']]),
+                           required_one_of=([['token', 'auth_realm'], ['token', 'auth_username', 'auth_client_secret']]),
+                           required_together=([['auth_username', 'auth_password'], ['auth_client_secret']])
                            )
 
-    result = dict(changed=False, msg='', flow={})
+    result = dict(changed=False, debug=[], msg='', flow={}, authenticationExecutions='')
 
     # Obtain access token, initialize API
     try:
@@ -385,14 +418,24 @@ def main():
     realm = module.params.get('realm')
     state = module.params.get('state')
     force = module.params.get('force')
+    
+    if module.params.get("flowJson") is not None:
+        with open(module.params.get("flowJson"), "r") as f:
+            flow = json.load(f)
+        authenticationExecutions = flow["authenticationExecutions"]
+        complete = True
+    else:
+        authenticationExecutions = module.params.get("authenticationExecutions")
+        complete = False
 
     new_auth_repr = {
         "alias": module.params.get("alias"),
         "copyFrom": module.params.get("copyFrom"),
-        "providerId": module.params.get("providerId"),
-        "authenticationExecutions": module.params.get("authenticationExecutions"),
-        "description": module.params.get("description"),
-        "builtIn": module.params.get("builtIn"),
+        "complete": complete,
+        "providerId": module.params.get("providerId") if module.params.get("providerId") else flow["providerId"],
+        "authenticationExecutions": authenticationExecutions,
+        "description": module.params.get("description") if module.params.get("description") else flow["description"],
+        "builtIn": module.params.get("builtIn") if module.params.get("builtIn") else flow["builtIn"],
         "subflow": module.params.get("subflow"),
     }
 
@@ -424,7 +467,7 @@ def main():
             if "copyFrom" in new_auth_repr and new_auth_repr["copyFrom"] is not None:
                 auth_repr = kc.copy_auth_flow(config=new_auth_repr, realm=realm)
             else:  # Create an empty authentication flow
-                auth_repr = kc.create_empty_auth_flow(config=new_auth_repr, realm=realm)
+                auth_repr = kc.create_auth_flow(config=new_auth_repr, realm=realm)
 
             # If the authentication still not exist on the server, raise an exception.
             if auth_repr is None:
@@ -457,12 +500,14 @@ def main():
                 if "copyFrom" in new_auth_repr and new_auth_repr["copyFrom"] is not None:
                     auth_repr = kc.copy_auth_flow(config=new_auth_repr, realm=realm)
                 else:  # Create an empty authentication flow
-                    auth_repr = kc.create_empty_auth_flow(config=new_auth_repr, realm=realm)
+                    auth_repr = kc.create_auth_flow(config=new_auth_repr, realm=realm)
                 # If the authentication still not exist on the server, raise an exception.
                 if auth_repr is None:
                     result['msg'] = "Authentication just created not found: " + str(new_auth_repr)
                     module.fail_json(**result)
             # Configure the executions for the flow
+
+            new_auth_repr["id"] = auth_repr["id"]
 
             if module.check_mode:
                 module.exit_json(**result)
@@ -495,6 +540,7 @@ def main():
             result['msg'] = 'Authentication flow: {alias} id: {id} is deleted'.format(alias=new_auth_repr['alias'],
                                                                                       id=auth_repr["id"])
 
+    result["debug"] = kc.debug
     module.exit_json(**result)
 
 
