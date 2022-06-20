@@ -684,9 +684,9 @@ def main():
 
     module = AnsibleModule(argument_spec=argument_spec,
                            supports_check_mode=True,
-                           required_one_of=([['id', 'realm', 'enabled'],
-                                             ['token', 'auth_realm', 'auth_username', 'auth_password']]),
-                           required_together=([['auth_realm', 'auth_username', 'auth_password']]))
+                           mutually_exclusive=([['token', 'auth_realm']]),
+                           required_one_of=([['id', 'realm', 'enabled'], ['token', 'auth_realm'], ['token', 'auth_username', 'auth_client_secret']]),
+                           required_together=([['auth_username', 'auth_password'], ['auth_client_secret']]))
 
     result = dict(changed=False, msg='', diff={}, proposed={}, existing={}, end_state={})
 
