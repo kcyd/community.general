@@ -242,6 +242,7 @@ from ansible_collections.community.general.plugins.module_utils.identity.keycloa
 from ansible.module_utils.basic import AnsibleModule
 import json
 
+
 def find_exec_in_executions(searched_exec, executions):
     """
     Search if exec is contained in the executions.
@@ -276,12 +277,12 @@ def create_or_update_executions(kc, config, realm='master'):
         cleared = False
         if config["complete"] is True:
             existing_executions = kc.get_executions_representation(config, realm=realm)
-            exclude_key = {"id", "flowId", "displayName", "description", "authenticationConfig", "requirement"}
-            if not kc.is_auth_executions_structure_equal(config["authenticationExecutions"], existing_executions, exclude_key):
+            if not kc.is_auth_executions_structure_equal(config["authenticationExecutions"], existing_executions):
                 flow = kc.get_authentication_flow_by_alias(alias=config["alias"], realm=realm)
                 kc.delete_authentication_flow_by_id(id=flow["id"], realm=realm)
                 kc.create_auth_flow(config=config, realm=realm)
                 cleared = True
+                changed = True
                 before = existing_executions
 
         parents = {}
@@ -324,8 +325,9 @@ def create_or_update_executions(kc, config, realm='master'):
                         exec_found = True
                         before += str(existing_executions[exec_index]) + '\n'
                     id_to_update = existing_executions[exec_index]["id"]
-                    # Remove exec from list in case 2 exec with same name
-                    existing_executions[exec_index].clear()
+                    if config["complete"] is False:
+                        # Remove exec from list in case 2 exec with same name
+                        existing_executions[exec_index].clear()
                 elif "providerId" in new_exec and new_exec["providerId"] is not None:
                     kc.create_execution(new_exec, flowAlias=flow_alias_parent, realm=realm)
                     exec_found = True
@@ -342,7 +344,6 @@ def create_or_update_executions(kc, config, realm='master'):
                     if "level" in new_exec:
                         parents[new_exec["level"]+1] = subflow_name
                 if exec_found:
-                    changed = True
                     if exec_index != -1:
                         # Update the existing execution
                         updated_exec = {
@@ -350,13 +351,20 @@ def create_or_update_executions(kc, config, realm='master'):
                         }
                         # add the execution configuration
                         if "authenticationConfig" in new_exec and new_exec["authenticationConfig"] is not None:
-                            if "id" in new_exec["authenticationConfig"]:
-                                del new_exec["authenticationConfig"]["id"]
-                            kc.add_authenticationConfig_to_execution(updated_exec["id"], new_exec["authenticationConfig"], realm=realm)
+                            new_auth_config = { x: new_exec["authenticationConfig"][x] for x in new_exec["authenticationConfig"] if x not in {"id"} }
+                            if cleared is False and "authenticationConfig" in existing_executions[exec_index]:
+                                old_auth_config = { x: existing_executions[exec_index]["authenticationConfig"][x] for x in existing_executions[exec_index]["authenticationConfig"] if x not in {"id"} }
+                            else:
+                                old_auth_config = {}
+                            if not old_auth_config == new_auth_config:
+                                kc.add_authenticationConfig_to_execution(updated_exec["id"], new_exec["authenticationConfig"], realm=realm)
+                                changed = True
                         for key in new_exec:
-                            # only add supported keys for update
-                            if key == "requirement" or key == "description" or key == "displayName":
+                            if key in {"requirement", "description", "displayName"}:
+                                # only add supported keys for update
                                 updated_exec[key] = new_exec[key]
+                                if cleared is False and key in existing_executions[exec_index] and existing_executions[exec_index][key] !=  new_exec[key]:
+                                    changed = True
                         if new_exec["requirement"] is not None:
                             kc.update_authentication_executions(flow_alias_parent, updated_exec, realm=realm)
                         diff = exec_index - new_exec_index
@@ -390,8 +398,12 @@ def main():
                                           flowAlias=dict(type='str'),
                                           authenticationConfig=dict(type='dict'),
                                           index=dict(type='int'),
+                                          level=dict(type='int'),
+                                          alias=dict(type='str'),
+                                          description=dict(type='str'),
+                                          authenticationFlow=dict(type='bool')
                                       )),
-        flowJson=dict(type='str'),
+        full_flow=dict(type='bool', default=False),
         state=dict(choices=["absent", "present"], default='present'),
         force=dict(type='bool', default=False),
     )
@@ -419,23 +431,14 @@ def main():
     state = module.params.get('state')
     force = module.params.get('force')
     
-    if module.params.get("flowJson") is not None:
-        with open(module.params.get("flowJson"), "r") as f:
-            flow = json.load(f)
-        authenticationExecutions = flow["authenticationExecutions"]
-        complete = True
-    else:
-        authenticationExecutions = module.params.get("authenticationExecutions")
-        complete = False
-
     new_auth_repr = {
         "alias": module.params.get("alias"),
         "copyFrom": module.params.get("copyFrom"),
-        "complete": complete,
-        "providerId": module.params.get("providerId") if module.params.get("providerId") else flow["providerId"],
-        "authenticationExecutions": authenticationExecutions,
-        "description": module.params.get("description") if module.params.get("description") else flow["description"],
-        "builtIn": module.params.get("builtIn") if module.params.get("builtIn") else flow["builtIn"],
+        "complete": module.params.get("full_flow"),
+        "providerId": module.params.get("providerId"),
+        "authenticationExecutions": module.params.get("authenticationExecutions"),
+        "description": module.params.get("description"),
+        "builtIn": module.params.get("builtIn"),
         "subflow": module.params.get("subflow"),
     }
 

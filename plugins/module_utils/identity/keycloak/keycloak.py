@@ -1530,14 +1530,15 @@ class KeycloakAPI(object):
             self.module.fail_json(msg='Could not get executions for authentication flow %s in realm %s: %s'
                                   % (config["alias"], realm, str(e)))
 
-    def is_auth_executions_structure_equal(self, authexecs1, authexecs2, exclude=None):
+    def is_auth_executions_structure_equal(self, authexecs1, authexecs2):
+        include = {"index", "level", "authenticationFlow", "providerId"}
         temp1 = []
         temp2 = []
         for authexec in authexecs1:
-            temp = {x: authexec[x] for x in authexec if x not in exclude}
+            temp = {x: authexec[x] for x in authexec if x in include and authexec[x] is not None}
             temp1.append(temp)
         for authexec in authexecs2:
-            temp = {x: authexec[x] for x in authexec if x not in exclude}
+            temp = {x: authexec[x] for x in authexec if x in include and authexec[x] is not None}
             temp2.append(temp)
 
         self.debug.append(temp1)
