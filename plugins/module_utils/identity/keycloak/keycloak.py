@@ -1541,8 +1541,6 @@ class KeycloakAPI(object):
             temp = {x: authexec[x] for x in authexec if x in include and authexec[x] is not None}
             temp2.append(temp)
 
-        self.debug.append(temp1)
-        self.debug.append(temp2)
         return temp1 == temp2
     
 

@@ -601,6 +601,7 @@ def main():
 
     meta_args = dict(
         state=dict(default='present', choices=['present', 'absent']),
+        realm_data=dict(type='dict'),
 
         id=dict(type='str'),
         realm=dict(type='str'),
@@ -684,8 +685,8 @@ def main():
 
     module = AnsibleModule(argument_spec=argument_spec,
                            supports_check_mode=True,
-                           mutually_exclusive=([['token', 'auth_realm']]),
-                           required_one_of=([['id', 'realm', 'enabled'], ['token', 'auth_realm'], ['token', 'auth_username', 'auth_client_secret']]),
+                           mutually_exclusive=([['token', 'auth_realm'], ['id', 'realm', 'realm_data']]),
+                           required_one_of=([['id', 'realm', 'enabled', 'realm_data'], ['token', 'auth_realm'], ['token', 'auth_username', 'auth_client_secret']]),
                            required_together=([['auth_username', 'auth_password'], ['auth_client_secret']]))
 
     result = dict(changed=False, msg='', diff={}, proposed={}, existing={}, end_state={})
@@ -701,15 +702,20 @@ def main():
     realm = module.params.get('realm')
     state = module.params.get('state')
 
-    # convert module parameters to realm representation parameters (if they belong in there)
-    params_to_ignore = list(keycloak_argument_spec().keys()) + ['state']
+    if realm is not None:
+        # convert module parameters to realm representation parameters (if they belong in there)
+        params_to_ignore = list(keycloak_argument_spec().keys()) + ['state']
 
-    # Filter and map the parameters names that apply to the role
-    realm_params = [x for x in module.params
-                    if x not in params_to_ignore and
-                    module.params.get(x) is not None]
+        # Filter and map the parameters names that apply to the role
+        realm_params = [x for x in module.params
+                        if x not in params_to_ignore and
+                        module.params.get(x) is not None]
+    else:
+        realm_data = module.params.get('realm_data')
+        realm_params = realm_data.keys()
+        realm = realm_data["realm"]
 
-    # See whether the realm already exists in Keycloak
+        # See whether the realm already exists in Keycloak
     before_realm = kc.get_realm_by_id(realm=realm)
 
     if before_realm is None:
@@ -720,6 +726,8 @@ def main():
 
     for realm_param in realm_params:
         new_param_value = module.params.get(realm_param)
+        if new_param_value is None:
+            new_param_value = realm_data[realm_param]
         changeset[camel(realm_param)] = new_param_value
 
     # Prepare the desired values using the existing values (non-existence results in a dict that is save to use as a basis)
