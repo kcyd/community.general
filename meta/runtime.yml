@@ -590,6 +590,8 @@ plugin_routing:
       redirect: community.general.identity.keycloak.keycloak_authentication
     keycloak_client:
       redirect: community.general.identity.keycloak.keycloak_client
+    keycloak_clients:
+      redirect: community.general.identity.keycloak.keycloak_clients
     keycloak_client_rolemapping:
       redirect: community.general.identity.keycloak.keycloak_client_rolemapping
     keycloak_clientscope:
