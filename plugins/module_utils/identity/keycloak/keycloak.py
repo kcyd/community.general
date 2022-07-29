@@ -1083,6 +1083,27 @@ class KeycloakAPI(object):
             self.module.fail_json(msg='Could not fetch role %s in realm %s: %s'
                                       % (name, realm, str(e)))
 
+    def get_realm_role_composites(self, name, realm='master'):
+        """ Fetch a keycloak role from the provided realm using the role's name.
+
+        If the role does not exist, None is returned.
+        :param name: Name of the role to fetch.
+        :param realm: Realm in which the role resides; default 'master'.
+        """
+        role_url = URL_REALM_ROLE_COMPOSITES.format(url=self.baseurl, realm=realm, name=quote(name))
+        try:
+            return json.loads(to_native(open_url(role_url, method="GET", headers=self.restheaders, timeout=self.connection_timeout,
+                                                 validate_certs=self.validate_certs).read()))
+        except HTTPError as e:
+            if e.code == 404:
+                return None
+            else:
+                self.module.fail_json(msg='Could not fetch role %s in realm %s: %s'
+                                          % (name, realm, str(e)))
+        except Exception as e:
+            self.module.fail_json(msg='Could not fetch role %s in realm %s: %s'
+                                      % (name, realm, str(e)))
+
     def create_realm_role(self, rolerep, realm='master'):
         """ Create a Keycloak realm role.
 

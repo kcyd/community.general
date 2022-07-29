@@ -250,6 +250,8 @@ def main():
     # See if it already exists in Keycloak
     if clientid is None:
         before_role = kc.get_realm_role(name, realm)
+        if before_role['composite'] is True:
+            before_role['composites'] = kc.get_realm_role_composites(name, realm)
     else:
         before_role = kc.get_client_role(name, clientid, realm)
 
