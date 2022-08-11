@@ -782,6 +782,7 @@ def main():
 
         id=dict(type='str'),
         client_id=dict(type='str', aliases=['clientId']),
+        client_data=dict(type='dict'),
         name=dict(type='str'),
         description=dict(type='str'),
         root_url=dict(type='str', aliases=['rootUrl']),
@@ -826,9 +827,9 @@ def main():
 
     module = AnsibleModule(argument_spec=argument_spec,
                            supports_check_mode=True,
-                           required_one_of=([['client_id', 'id'],
-                                             ['token', 'auth_realm', 'auth_username', 'auth_password']]),
-                           required_together=([['auth_realm', 'auth_username', 'auth_password']]))
+                           required_one_of=([['client_id', 'id', 'client_data'],
+                                             ['token', 'auth_realm'], ['auth_password', 'auth_client_secret']]),
+                           required_together=([['auth_username', 'auth_password'], ['auth_client_id', 'auth_client_secret']]))
 
     result = dict(changed=False, msg='', diff={}, proposed={}, existing={}, end_state={})
 
@@ -842,16 +843,23 @@ def main():
 
     realm = module.params.get('realm')
     cid = module.params.get('id')
+    client_id = module.params.get('client_id')
     state = module.params.get('state')
 
     # Filter and map the parameters names that apply to the client
-    client_params = [x for x in module.params
+    if cid is not None and client_id is not None:
+        client_params = [x for x in module.params
                      if x not in list(keycloak_argument_spec().keys()) + ['state', 'realm'] and
                      module.params.get(x) is not None]
+    else:
+        client_data = module.params.get('client_data')
+        client_params = client_data.keys()
+        client_id = client_data['clientId']
+
 
     # See if it already exists in Keycloak
     if cid is None:
-        before_client = kc.get_client_by_clientid(module.params.get('client_id'), realm=realm)
+        before_client = kc.get_client_by_clientid(client_id, realm=realm)
         if before_client is not None:
             cid = before_client['id']
     else:
@@ -864,7 +872,10 @@ def main():
     changeset = {}
 
     for client_param in client_params:
-        new_param_value = module.params.get(client_param)
+        if client_data is None:
+            new_param_value = module.params.get(client_param)
+        else:
+            new_param_value = client_data[client_param]
 
         # some lists in the Keycloak API are sorted, some are not.
         if isinstance(new_param_value, list):
@@ -935,10 +946,17 @@ def main():
 
                 module.exit_json(**result)
 
-            # do the update
-            kc.update_client(cid, desired_client, realm=realm)
+            if ('defaultClientScopes' in changeset and changeset['defaultClientScopes'] != []) or \
+               ('optionalClientScopes' in changeset and changeset['optionalClientScopes'] != []):
+                # recreate the client, as update doesn't update scope mappings
+                del desired_client['id']
+                kc.delete_client(cid, realm=realm)
+                kc.create_client(desired_client, realm=realm)
+            else:
+                # do the update
+                kc.update_client(cid, desired_client, realm=realm)
 
-            after_client = kc.get_client_by_id(cid, realm=realm)
+            after_client = kc.get_client_by_clientid(desired_client['clientId'], realm=realm)
             if before_client == after_client:
                 result['changed'] = False
             if module._diff:
